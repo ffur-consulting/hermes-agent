@@ -1164,6 +1164,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
             if not self._should_process_message(data):
+                self._observe_unmentioned_group_message(data)
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
@@ -1207,6 +1208,51 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    def _observe_unmentioned_group_message(self, data: dict[str, Any]) -> None:
+        """Append group chatter the trigger gate skipped to the group's session, dispatching nothing.
+
+        Opt-in (``observe_unmentioned_group_messages``) and scoped to allowlisted groups, so an
+        unaddressed message becomes shared context without costing a model turn. Only text is stored:
+        media in an unaddressed message carries no context worth a download.
+        """
+        try:
+            if not self._whatsapp_observe_unmentioned_group_messages():
+                return
+            if not data.get("isGroup", False):
+                return
+            chat_id = str(data.get("chatId") or "")
+            if not chat_id or not self._is_group_allowed(chat_id):
+                return
+            observe_chats = self._whatsapp_observe_chats()
+            if observe_chats and chat_id not in observe_chats:
+                return
+            body = str(data.get("body") or "").strip()
+            if not body:
+                return
+            store = getattr(self, "_session_store", None)
+            if not store:
+                return
+            import time
+            sender_jid = self._normalize_whatsapp_id(data.get("senderId")) or "unknown"
+            sender_id = sender_jid.split("@", 1)[0]
+            sender_name = str(data.get("senderName") or sender_id)
+            source = self.build_source(
+                chat_id=chat_id, chat_name=data.get("chatName"), chat_type="group",
+                user_id=None, user_name=None, message_id=data.get("messageId"))
+            session_entry = store.get_or_create_session(source)
+            entry: dict[str, Any] = {
+                "role": "user", "content": f"[{sender_name}|{sender_id}] {body}",
+                "timestamp": time.time(), "observed": True,
+            }
+            if data.get("messageId"):
+                entry["message_id"] = str(data["messageId"])
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "[%s] WhatsApp group message observed (no bot trigger): chat=%s from=%s",
+                self.name, chat_id, sender_id)
+        except Exception as exc:
+            logger.warning("[%s] Failed to observe WhatsApp group message: %s", self.name, exc)
 
 
 # ── Plugin glue: register(ctx) plus the hooks for gateway/run.py, gateway/config.py, hermes_cli/gateway.py, send_message_tool.py.
@@ -1349,6 +1395,8 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("group_policy", "WHATSAPP_GROUP_POLICY", "lower"), ("mention_patterns", "WHATSAPP_MENTION_PATTERNS", "json"),
     ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
     ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
+    ("observe_unmentioned_group_messages", "WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "lower"),
+    ("observe_chats", "WHATSAPP_OBSERVE_CHATS", "csv"),
 )
 
 

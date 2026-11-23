@@ -95,6 +95,24 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             return configured.lower() in _TRUTHY
         return bool(configured)
 
+    def _whatsapp_observe_unmentioned_group_messages(self) -> bool:
+        """Store skipped unmentioned group chatter as session context, dispatching only when addressed.
+
+        ``observe_chats`` narrows observation to specific allowlisted group JIDs (blank = every
+        allowlisted group), so a broad allowlist can't silently ingest unrelated groups.
+        """
+        configured = self.config.extra.get("observe_unmentioned_group_messages")
+        if configured is None:
+            configured = _get_wsecret("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", default="false") or "false"
+        if isinstance(configured, str):
+            return configured.strip().lower() in _TRUTHY
+        return bool(configured)
+
+    def _whatsapp_observe_chats(self) -> set[str]:
+        """``extra.observe_chats`` (blank = every allowlisted group) else the scoped env CSV."""
+        return self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "observe_chats", "WHATSAPP_OBSERVE_CHATS"))
+
     def _whatsapp_free_response_chats(self) -> set[str]:
         """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
         return self._coerce_allow_list(
