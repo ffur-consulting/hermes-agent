@@ -795,6 +795,7 @@ async function startSocket() {
         msg,
         chatId,
         senderId: resolvedSenderId,
+        senderAltId,
         senderNumber,
         botIds,
         isGroup,

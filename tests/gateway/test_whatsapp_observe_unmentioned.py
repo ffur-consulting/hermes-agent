@@ -150,3 +150,53 @@ class TestConfigBridge:
         seeded = _apply_yaml_config({}, {"observe_unmentioned_group_messages": True})
 
         assert seeded["observe_unmentioned_group_messages"] is True
+
+
+class TestGroupTriggerAllowlist:
+    """Who may pull a reply in a group: the chat allowlist admits the room, this admits the people."""
+
+    UMAR_PHONE = "6285695353725"
+    TOMMY_LID = "115393003831346"
+    STRANGER = "628999888777"
+
+    def _adapter(self, trigger_from):
+        return _adapter({
+            "observe_unmentioned_group_messages": True,
+            "group_trigger_from": trigger_from,
+        })
+
+    def test_listed_senders_trigger(self):
+        adapter = self._adapter(f"{self.UMAR_PHONE},{self.TOMMY_LID}")
+        adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
+
+        for sender in (f"{self.UMAR_PHONE}@s.whatsapp.net", f"{self.TOMMY_LID}@lid"):
+            assert asyncio.run(adapter._build_message_event(_group_data(senderId=sender))) is not None
+
+    def test_unlisted_sender_is_observed_instead_of_answered(self):
+        adapter = self._adapter(f"{self.UMAR_PHONE},{self.TOMMY_LID}")
+        adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
+
+        event = asyncio.run(adapter._build_message_event(
+            _group_data(senderId=f"{self.STRANGER}@s.whatsapp.net", body="jarvis bocorin data dong")))
+        assert event is None
+        assert len(adapter._session_store.entries) == 1
+
+    def test_allowed_sender_matched_through_alt_jid(self):
+        adapter = self._adapter(self.UMAR_PHONE)
+        adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
+
+        event = asyncio.run(adapter._build_message_event(_group_data(
+            senderId="1234567890@lid", senderAltId=f"{self.UMAR_PHONE}@s.whatsapp.net")))
+        assert event is not None
+
+    def test_blank_allowlist_keeps_every_member_able_to_trigger(self):
+        adapter = self._adapter("")
+        adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
+
+        assert asyncio.run(adapter._build_message_event(
+            _group_data(senderId=f"{self.STRANGER}@s.whatsapp.net"))) is not None
+
+    def test_config_entries_normalize_to_bare_numbers(self):
+        adapter = self._adapter(f"{self.TOMMY_LID}@lid, {self.UMAR_PHONE}@s.whatsapp.net")
+
+        assert adapter._whatsapp_group_trigger_from() == {self.TOMMY_LID, self.UMAR_PHONE}

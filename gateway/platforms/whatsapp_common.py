@@ -113,6 +113,31 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return self._coerce_allow_list(
             _extra_or_wsecret(self.config.extra, "observe_chats", "WHATSAPP_OBSERVE_CHATS"))
 
+    def _whatsapp_group_trigger_from(self) -> set[str]:
+        """``extra.group_trigger_from`` (blank = any member may trigger) else the scoped env CSV."""
+        raw = self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "group_trigger_from", "WHATSAPP_GROUP_TRIGGER_FROM"))
+        # Accept either JID form in config: compare on the bare number.
+        return {self._normalize_whatsapp_id(entry).split("@", 1)[0] for entry in raw if entry}
+
+    def _whatsapp_group_trigger_allowed(self, data: dict[str, Any]) -> bool:
+        """Whether this group sender may trigger a reply (blank allowlist = anyone in the group).
+
+        A group is often wider than the team: the chat allowlist admits the room, this admits the
+        people. Senders left out are still observed as context, they just cannot pull an answer.
+        Matched on the bare number of either JID form (phone ``@s.whatsapp.net`` or opaque ``@lid``)
+        because the bridge hands over whichever Baileys resolved for that sender.
+        """
+        allowed = self._whatsapp_group_trigger_from()
+        if not allowed:
+            return True
+        forms = set()
+        for key in ("senderId", "senderAltId"):
+            normalized = self._normalize_whatsapp_id(data.get(key))
+            if normalized:
+                forms.add(normalized.split("@", 1)[0])
+        return bool(forms & allowed)
+
     def _whatsapp_free_response_chats(self) -> set[str]:
         """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
         return self._coerce_allow_list(
@@ -271,6 +296,9 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             # DMs that pass the policy gate are always processed
             return self._is_dm_intake_allowed(str(data.get("senderId") or data.get("from") or ""))
         if not self._is_group_allowed(chat_id):
+            return False
+        # Who may pull a reply: the chat allowlist admits the room, this admits the people.
+        if not self._whatsapp_group_trigger_allowed(data):
             return False
         # Group messages: check mention / free-response settings
         if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
