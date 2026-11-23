@@ -157,6 +157,7 @@ class TestGroupTriggerAllowlist:
 
     UMAR_PHONE = "6285695353725"
     TOMMY_LID = "115393003831346"
+    TOMMY_PHONE = "6282162666999"
     STRANGER = "628999888777"
 
     def _adapter(self, trigger_from):
@@ -200,3 +201,18 @@ class TestGroupTriggerAllowlist:
         adapter = self._adapter(f"{self.TOMMY_LID}@lid, {self.UMAR_PHONE}@s.whatsapp.net")
 
         assert adapter._whatsapp_group_trigger_from() == {self.TOMMY_LID, self.UMAR_PHONE}
+
+    def test_auto_reply_sender_needs_no_trigger_word(self):
+        adapter = _adapter({
+            "observe_unmentioned_group_messages": True,
+            "group_trigger_from": self.UMAR_PHONE,
+            "group_auto_reply_from": self.TOMMY_PHONE,
+        })
+        adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
+
+        # No wake word, no mention — just a teammate asking.
+        assert asyncio.run(adapter._build_message_event(_group_data(
+            senderId=f"{self.TOMMY_PHONE}@s.whatsapp.net", body="Hmm ada model local?"))) is not None
+        # A non-auto-reply sender still needs the trigger.
+        assert asyncio.run(adapter._build_message_event(_group_data(
+            senderId=f"{self.UMAR_PHONE}@s.whatsapp.net", body="halo"))) is None
