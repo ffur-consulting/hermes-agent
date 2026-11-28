@@ -7,6 +7,7 @@ Covers:
 """
 
 import asyncio
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -54,7 +55,9 @@ def _make_adapter():
     adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = MagicMock()
-    adapter._mention_patterns = []
+    # Group messages only reach the event builder after the wake-word gate, and the
+    # gate reads the wake word from these patterns (empty in production = no wake word).
+    adapter._mention_patterns = [re.compile(r"\bjarvis\b", re.IGNORECASE)]
     adapter._dm_policy = "open"
     adapter._allow_from = set()
     adapter._group_policy = "open"
@@ -235,7 +238,9 @@ class TestBridgeEventMetadata:
             "senderName": "Ananya",
             "chatName": "Family",
             "isGroup": True,
-            "body": "did you save this wedding invite?",
+            # Group message: needs the wake word or the gate (rightly) drops it
+            # before the quoted-media folding under test here ever runs.
+            "body": "jarvis did you save this wedding invite?",
             "hasMedia": False,
             "mediaUrls": [],
             "mediaType": "",
@@ -295,7 +300,8 @@ class TestBridgeEventMetadata:
             "senderName": "Ananya",
             "chatName": "Family",
             "isGroup": True,
-            "body": "did you save this?",
+            # Same gate reason as above: a group message needs the wake word.
+            "body": "jarvis did you save this?",
             "hasMedia": False,
             "mediaUrls": [],
             "mediaType": "",
