@@ -1399,6 +1399,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("observe_chats", "WHATSAPP_OBSERVE_CHATS", "csv"),
     ("group_trigger_from", "WHATSAPP_GROUP_TRIGGER_FROM", "csv"),
     ("group_auto_reply_from", "WHATSAPP_GROUP_AUTO_REPLY_FROM", "csv"),
+    ("group_trigger_by_chat", "WHATSAPP_GROUP_TRIGGER_BY_CHAT", "json"),
 )
 
 

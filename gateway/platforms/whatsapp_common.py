@@ -144,9 +144,29 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         Auto-reply senders are admitted here too, so listing one there never needs a second entry.
         """
         allowed = self._whatsapp_group_trigger_from() | self._whatsapp_group_auto_reply_from()
+        override = self._whatsapp_group_trigger_override(str(data.get("chatId") or ""))
+        if override is not None:
+            # Per-group list replaces the global trigger list for this chat only.
+            allowed = override | self._whatsapp_group_auto_reply_from()
         if not allowed:
             return True
         return bool(self._whatsapp_sender_forms(data) & allowed)
+
+    def _whatsapp_group_trigger_override(self, chat_id: str) -> set[str] | None:
+        """``extra.group_trigger_by_chat``: {group JID: [sender numbers]} for one room.
+
+        Returns None when the chat has no entry, so the global list applies. An entry with an
+        empty list means nobody in that room may trigger (observe only).
+        """
+        by_chat = self.config.extra.get("group_trigger_by_chat") or {}
+        if not isinstance(by_chat, dict) or not chat_id:
+            return None
+        key = self._normalize_whatsapp_id(chat_id)
+        for jid, entries in by_chat.items():
+            if self._normalize_whatsapp_id(str(jid)) == key:
+                raw = self._coerce_allow_list(entries)
+                return {self._normalize_whatsapp_id(e).split("@", 1)[0] for e in raw if e}
+        return None
 
     def _whatsapp_free_response_chats(self) -> set[str]:
         """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
