@@ -90,7 +90,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
         if configured is None:
-            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false"
+            # Default on: group messages need a wake word/mention unless the owner turns it off.
+            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="true") or "true"
         if isinstance(configured, str):
             return configured.lower() in _TRUTHY
         return bool(configured)
@@ -121,7 +122,11 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return {self._normalize_whatsapp_id(entry).split("@", 1)[0] for entry in raw if entry}
 
     def _whatsapp_group_auto_reply_from(self) -> set[str]:
-        """``extra.group_auto_reply_from``: senders whose group messages answer without a trigger word."""
+        """``extra.group_auto_reply_from``: extra senders admitted to the group trigger allowlist.
+
+        Being listed here no longer skips the wake word: every group sender, the owner included,
+        must address the bot (mention, reply, "jarvis", or a free-response chat).
+        """
         raw = self._coerce_allow_list(
             _extra_or_wsecret(self.config.extra, "group_auto_reply_from", "WHATSAPP_GROUP_AUTO_REPLY_FROM"))
         return {self._normalize_whatsapp_id(entry).split("@", 1)[0] for entry in raw if entry}
@@ -330,9 +335,6 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         # Who may pull a reply: the chat allowlist admits the room, this admits the people.
         if not self._whatsapp_group_trigger_allowed(data):
             return False
-        # Auto-reply senders (e.g. a teammate the owner wants answered without a wake word).
-        if self._whatsapp_sender_forms(data) & self._whatsapp_group_auto_reply_from():
-            return True
         # Group messages: check mention / free-response settings
         if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
             return True

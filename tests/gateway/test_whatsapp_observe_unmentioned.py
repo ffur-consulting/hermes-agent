@@ -20,6 +20,7 @@ GROUP = "120363413124512952@g.us"
 class _FakeSession:
     def __init__(self):
         self.session_id = "agent:main:whatsapp:group:" + GROUP
+        self.source = None
 
     def get_or_create_session(self, source, **_kwargs):
         self.source = source
@@ -33,6 +34,7 @@ class _FakeStore:
 
     def get_or_create_session(self, source, **_kwargs):
         self.source = source
+        self.session.source = source
         return self.session
 
     def append_to_transcript(self, session_id, entry):
@@ -171,7 +173,17 @@ class TestGroupTriggerAllowlist:
         adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
 
         for sender in (f"{self.UMAR_PHONE}@s.whatsapp.net", f"{self.TOMMY_LID}@lid"):
-            assert asyncio.run(adapter._build_message_event(_group_data(senderId=sender))) is not None
+            assert asyncio.run(adapter._build_message_event(
+                _group_data(senderId=sender, body="jarvis cek dong"))) is not None
+
+    def test_listed_sender_without_wake_word_is_not_answered(self):
+        adapter = self._adapter(f"{self.UMAR_PHONE},{self.TOMMY_LID}")
+        adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
+
+        # Being on the list admits the sender; it does not skip the wake word.
+        assert asyncio.run(adapter._build_message_event(
+            _group_data(senderId=f"{self.UMAR_PHONE}@s.whatsapp.net", body="halo"))) is None
+        assert len(adapter._session_store.entries) == 1
 
     def test_unlisted_sender_is_observed_instead_of_answered(self):
         adapter = self._adapter(f"{self.UMAR_PHONE},{self.TOMMY_LID}")
@@ -187,7 +199,8 @@ class TestGroupTriggerAllowlist:
         adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
 
         event = asyncio.run(adapter._build_message_event(_group_data(
-            senderId="1234567890@lid", senderAltId=f"{self.UMAR_PHONE}@s.whatsapp.net")))
+            senderId="1234567890@lid", senderAltId=f"{self.UMAR_PHONE}@s.whatsapp.net",
+            body="jarvis halo")))
         assert event is not None
 
     def test_blank_allowlist_keeps_every_member_able_to_trigger(self):
@@ -195,14 +208,17 @@ class TestGroupTriggerAllowlist:
         adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
 
         assert asyncio.run(adapter._build_message_event(
-            _group_data(senderId=f"{self.STRANGER}@s.whatsapp.net"))) is not None
+            _group_data(senderId=f"{self.STRANGER}@s.whatsapp.net", body="jarvis halo"))) is not None
+        # Blank allowlist means anyone may trigger, but still only when addressed.
+        assert asyncio.run(adapter._build_message_event(
+            _group_data(senderId=f"{self.STRANGER}@s.whatsapp.net", body="halo"))) is None
 
     def test_config_entries_normalize_to_bare_numbers(self):
         adapter = self._adapter(f"{self.TOMMY_LID}@lid, {self.UMAR_PHONE}@s.whatsapp.net")
 
         assert adapter._whatsapp_group_trigger_from() == {self.TOMMY_LID, self.UMAR_PHONE}
 
-    def test_auto_reply_sender_needs_no_trigger_word(self):
+    def test_auto_reply_sender_still_needs_trigger_word(self):
         adapter = _adapter({
             "observe_unmentioned_group_messages": True,
             "group_trigger_from": self.UMAR_PHONE,
@@ -210,9 +226,12 @@ class TestGroupTriggerAllowlist:
         })
         adapter._mention_patterns = [re.compile(r"(?i)^\s*jarvis\b")]
 
-        # No wake word, no mention — just a teammate asking.
+        # Nobody skips the wake word, the auto-reply list included.
         assert asyncio.run(adapter._build_message_event(_group_data(
-            senderId=f"{self.TOMMY_PHONE}@s.whatsapp.net", body="Hmm ada model local?"))) is not None
-        # A non-auto-reply sender still needs the trigger.
+            senderId=f"{self.TOMMY_PHONE}@s.whatsapp.net", body="Hmm ada model local?"))) is None
         assert asyncio.run(adapter._build_message_event(_group_data(
-            senderId=f"{self.UMAR_PHONE}@s.whatsapp.net", body="halo"))) is None
+            senderId=f"{self.TOMMY_PHONE}@s.whatsapp.net", body="jarvis ada model local?"))) is not None
+        # A sender outside both lists cannot trigger even when addressed.
+        assert asyncio.run(adapter._build_message_event(_group_data(
+            senderId=f"{self.STRANGER}@s.whatsapp.net", body="jarvis halo"))) is None
+
