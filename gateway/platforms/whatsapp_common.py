@@ -90,10 +90,88 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
         if configured is None:
-            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false"
+            # Default on: group messages need a wake word/mention unless the owner turns it off.
+            configured = _get_wsecret("WHATSAPP_REQUIRE_MENTION", default="true") or "true"
         if isinstance(configured, str):
             return configured.lower() in _TRUTHY
         return bool(configured)
+
+    def _whatsapp_observe_unmentioned_group_messages(self) -> bool:
+        """Store skipped unmentioned group chatter as session context, dispatching only when addressed.
+
+        ``observe_chats`` narrows observation to specific allowlisted group JIDs (blank = every
+        allowlisted group), so a broad allowlist can't silently ingest unrelated groups.
+        """
+        configured = self.config.extra.get("observe_unmentioned_group_messages")
+        if configured is None:
+            configured = _get_wsecret("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", default="false") or "false"
+        if isinstance(configured, str):
+            return configured.strip().lower() in _TRUTHY
+        return bool(configured)
+
+    def _whatsapp_observe_chats(self) -> set[str]:
+        """``extra.observe_chats`` (blank = every allowlisted group) else the scoped env CSV."""
+        return self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "observe_chats", "WHATSAPP_OBSERVE_CHATS"))
+
+    def _whatsapp_group_trigger_from(self) -> set[str]:
+        """``extra.group_trigger_from`` (blank = any member may trigger) else the scoped env CSV."""
+        raw = self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "group_trigger_from", "WHATSAPP_GROUP_TRIGGER_FROM"))
+        # Accept either JID form in config: compare on the bare number.
+        return {self._normalize_whatsapp_id(entry).split("@", 1)[0] for entry in raw if entry}
+
+    def _whatsapp_group_auto_reply_from(self) -> set[str]:
+        """``extra.group_auto_reply_from``: extra senders admitted to the group trigger allowlist.
+
+        Being listed here no longer skips the wake word: every group sender, the owner included,
+        must address the bot (mention, reply, "jarvis", or a free-response chat).
+        """
+        raw = self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "group_auto_reply_from", "WHATSAPP_GROUP_AUTO_REPLY_FROM"))
+        return {self._normalize_whatsapp_id(entry).split("@", 1)[0] for entry in raw if entry}
+
+    def _whatsapp_sender_forms(self, data: dict[str, Any]) -> set[str]:
+        """The sender's bare number in every JID form the bridge handed over (phone ``@s.whatsapp.net``
+        or opaque ``@lid``) — Baileys resolves whichever it has, so match on both."""
+        forms = set()
+        for key in ("senderId", "senderAltId"):
+            normalized = self._normalize_whatsapp_id(data.get(key))
+            if normalized:
+                forms.add(normalized.split("@", 1)[0])
+        return forms
+
+    def _whatsapp_group_trigger_allowed(self, data: dict[str, Any]) -> bool:
+        """Whether this group sender may trigger a reply (blank allowlists = anyone in the group).
+
+        A group is often wider than the team: the chat allowlist admits the room, this admits the
+        people. Senders left out are still observed as context, they just cannot pull an answer.
+        Auto-reply senders are admitted here too, so listing one there never needs a second entry.
+        """
+        allowed = self._whatsapp_group_trigger_from() | self._whatsapp_group_auto_reply_from()
+        override = self._whatsapp_group_trigger_override(str(data.get("chatId") or ""))
+        if override is not None:
+            # Per-group list replaces the global trigger list for this chat only.
+            allowed = override | self._whatsapp_group_auto_reply_from()
+        if not allowed:
+            return True
+        return bool(self._whatsapp_sender_forms(data) & allowed)
+
+    def _whatsapp_group_trigger_override(self, chat_id: str) -> set[str] | None:
+        """``extra.group_trigger_by_chat``: {group JID: [sender numbers]} for one room.
+
+        Returns None when the chat has no entry, so the global list applies. An entry with an
+        empty list means nobody in that room may trigger (observe only).
+        """
+        by_chat = self.config.extra.get("group_trigger_by_chat") or {}
+        if not isinstance(by_chat, dict) or not chat_id:
+            return None
+        key = self._normalize_whatsapp_id(chat_id)
+        for jid, entries in by_chat.items():
+            if self._normalize_whatsapp_id(str(jid)) == key:
+                raw = self._coerce_allow_list(entries)
+                return {self._normalize_whatsapp_id(e).split("@", 1)[0] for e in raw if e}
+        return None
 
     def _whatsapp_free_response_chats(self) -> set[str]:
         """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
@@ -254,6 +332,9 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             # DMs that pass the policy gate are always processed
             return self._is_dm_intake_allowed(str(data.get("senderId") or data.get("from") or ""))
         if not self._is_group_allowed(chat_id):
+            return False
+        # Who may pull a reply: the chat allowlist admits the room, this admits the people.
+        if not self._whatsapp_group_trigger_allowed(data):
             return False
         # Group messages: check mention / free-response settings
         if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
